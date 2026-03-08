@@ -21,23 +21,23 @@
 </head>
 <body>
   <div id="root"></div>
-
   <script type="text/babel">
     const { useState, useRef, useCallback, useEffect } = React;
 
-    /* ══════════════════════════════════
+    /* ══════════════════════════════════════════
        MATH ENGINE
-    ══════════════════════════════════ */
+    ══════════════════════════════════════════ */
+
     function sobel(data, W, H) {
       const g = new Float32Array(W * H);
       for (let i = 0; i < W * H; i++)
-        g[i] = 0.299 * data[i*4] + 0.587 * data[i*4+1] + 0.114 * data[i*4+2];
+        g[i] = 0.299*data[i*4] + 0.587*data[i*4+1] + 0.114*data[i*4+2];
       const e = new Float32Array(W * H);
       for (let y = 1; y < H-1; y++) {
         for (let x = 1; x < W-1; x++) {
           const p = (r,c) => g[r*W+c];
-          const gx = -p(y-1,x-1)+p(y-1,x+1)-2*p(y,x-1)+2*p(y,x+1)-p(y+1,x-1)+p(y+1,x+1);
-          const gy = -p(y-1,x-1)-2*p(y-1,x)-p(y-1,x+1)+p(y+1,x-1)+2*p(y+1,x)+p(y+1,x+1);
+          const gx = -p(y-1,x-1)+p(y-1,x+1) - 2*p(y,x-1)+2*p(y,x+1) - p(y+1,x-1)+p(y+1,x+1);
+          const gy = -p(y-1,x-1)-2*p(y-1,x)-p(y-1,x+1) + p(y+1,x-1)+2*p(y+1,x)+p(y+1,x+1);
           e[y*W+x] = Math.sqrt(gx*gx + gy*gy);
         }
       }
@@ -49,29 +49,27 @@
       const comps = [];
       for (let s = 0; s < W*H; s++) {
         if (!binary[s] || visited[s]) continue;
-        const comp = [];
-        const q = [s]; visited[s] = 1; let head = 0;
+        const comp = []; const q = [s]; visited[s] = 1; let head = 0;
         while (head < q.length) {
           const idx = q[head++]; comp.push(idx);
           const x = idx % W, y = (idx-x)/W;
-          for (let dy = -1; dy <= 1; dy++) {
-            for (let dx = -1; dx <= 1; dx++) {
-              if (!dx && !dy) continue;
-              const nx = x+dx, ny = y+dy;
-              if (nx<0||nx>=W||ny<0||ny>=H) continue;
-              const ni = ny*W+nx;
-              if (!binary[ni]||visited[ni]) continue;
-              visited[ni] = 1; q.push(ni);
-            }
+          for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            const nx = x+dx, ny = y+dy;
+            if (nx<0||nx>=W||ny<0||ny>=H) continue;
+            const ni = ny*W+nx;
+            if (!binary[ni]||visited[ni]) continue;
+            visited[ni] = 1; q.push(ni);
           }
         }
-        if (comp.length >= 8) comps.push(comp.map(i => [i%W,(i-i%W)/W]));
+        if (comp.length >= 12) comps.push(comp.map(i => [i%W, (i-i%W)/W]));
       }
       return comps;
     }
 
+    // Nearest-neighbour walk to order contour pixels into a continuous path
     function nnOrder(rawPts) {
-      const MAX = 140;
+      const MAX = 200;
       const pts = rawPts.length > MAX
         ? rawPts.filter((_,i) => i % Math.ceil(rawPts.length/MAX) === 0)
         : [...rawPts];
@@ -97,45 +95,61 @@
       let sx=0,sy=0,sxy=0,sx2=0;
       for (const [x,y] of pts) { sx+=x; sy+=y; sxy+=x*y; sx2+=x*x; }
       const xVar = sx2/n - (sx/n)**2;
-      if (xVar < 0.8) return { type:'line', vert:true, xc:sx/n, y0:Math.min(...pts.map(p=>p[1])), y1:Math.max(...pts.map(p=>p[1])), r2:1 };
+      if (xVar < 0.8) return {
+        type:'line', vert:true, xc:sx/n,
+        y0:Math.min(...pts.map(p=>p[1])), y1:Math.max(...pts.map(p=>p[1])), r2:1
+      };
       const D = n*sx2 - sx*sx;
       if (Math.abs(D)<1e-6) return { type:'line', m:0, b:sy/n, r2:0, x0:0, x1:0 };
       const m = (n*sxy-sx*sy)/D, b = (sy-m*sx)/n;
-      const ym = sy/n;
-      let st=0, sr=0;
+      const ym = sy/n; let st=0, sr=0;
       for (const [x,y] of pts) { st+=(y-ym)**2; sr+=(y-m*x-b)**2; }
-      const r2 = st<1e-6 ? 1 : 1-sr/st;
+      const r2 = st < 1e-6 ? 1 : 1 - sr/st;
       return { type:'line', m, b, r2, x0:Math.min(...pts.map(p=>p[0])), x1:Math.max(...pts.map(p=>p[0])) };
     }
 
+    // Strict circle fit: requires tight mean error AND arc spanning > 150°
     function fitCircle(pts) {
       const n = pts.length;
-      if (n < 8) return null;
+      if (n < 16) return null;
       let Sxx=0,Sxy=0,Sx=0,Syy=0,Sy=0,SxR=0,SyR=0,SR=0;
       for (const [x,y] of pts) {
-        const R = x*x+y*y;
+        const R=x*x+y*y;
         Sxx+=x*x; Sxy+=x*y; Sx+=x; Syy+=y*y; Sy+=y; SxR+=x*R; SyR+=y*R; SR+=R;
       }
-      const M = [[Sxx,Sxy,Sx],[Sxy,Syy,Sy],[Sx,Sy,n]];
-      const rhs = [-SxR,-SyR,-SR];
+      const M=[[Sxx,Sxy,Sx],[Sxy,Syy,Sy],[Sx,Sy,n]], rhs=[-SxR,-SyR,-SR];
       const d3 = a => a[0][0]*(a[1][1]*a[2][2]-a[1][2]*a[2][1])-a[0][1]*(a[1][0]*a[2][2]-a[1][2]*a[2][0])+a[0][2]*(a[1][0]*a[2][1]-a[1][1]*a[2][0]);
-      const Det = d3(M);
-      if (Math.abs(Det)<1e-10) return null;
-      const sub = i => { const c = M.map(r=>[...r]); c[0][i]=rhs[0]; c[1][i]=rhs[1]; c[2][i]=rhs[2]; return c; };
-      const A=d3(sub(0))/Det, B=d3(sub(1))/Det, C2=d3(sub(2))/Det;
-      const cx=-A/2, cy=-B/2, r2c=cx*cx+cy*cy-C2;
+      const Det=d3(M); if (Math.abs(Det)<1e-10) return null;
+      const sub = i => { const c=M.map(r=>[...r]); c[0][i]=rhs[0]; c[1][i]=rhs[1]; c[2][i]=rhs[2]; return c; };
+      const A=d3(sub(0))/Det, B=d3(sub(1))/Det, C=d3(sub(2))/Det;
+      const cx=-A/2, cy=-B/2, r2c=cx*cx+cy*cy-C;
       if (r2c<=0) return null;
       const r=Math.sqrt(r2c);
-      if (!isFinite(r)||r<3||r>700) return null;
+      if (!isFinite(r)||r<5||r>400) return null;
+
+      // Mean radial error must be very tight
       let err=0;
       for (const [x,y] of pts) err+=Math.abs(Math.sqrt((x-cx)**2+(y-cy)**2)-r);
+      if (err/n > 2.2) return null;
+
+      // Arc-span check: the points must cover > 150 degrees of the circle
+      const angles = pts.map(([x,y])=>Math.atan2(y-cy,x-cx));
+      angles.sort((a,b)=>a-b);
+      // Find the largest gap in angle coverage
+      let maxGap = 0;
+      for (let i=0;i<angles.length-1;i++) maxGap=Math.max(maxGap,angles[i+1]-angles[i]);
+      maxGap = Math.max(maxGap, 2*Math.PI-(angles[angles.length-1]-angles[0]));
+      const arcSpan = 2*Math.PI - maxGap;
+      if (arcSpan < 2.62) return null; // require > 150° (2.62 rad)
+
       return { type:'circle', cx, cy, r, error:err/n };
     }
 
-    function fitFourier(pts, K=6) {
+    // Fourier series with K=16 harmonics for accurate shape reconstruction
+    function fitFourier(pts, K=16) {
       const n = pts.length;
-      const xs = pts.map(p=>p[0]), ys = pts.map(p=>p[1]);
-      const a0x = xs.reduce((s,v)=>s+v,0)/n, a0y = ys.reduce((s,v)=>s+v,0)/n;
+      const xs=pts.map(p=>p[0]), ys=pts.map(p=>p[1]);
+      const a0x=xs.reduce((s,v)=>s+v,0)/n, a0y=ys.reduce((s,v)=>s+v,0)/n;
       const axC=[],bxC=[],ayC=[],byC=[];
       for (let k=1;k<=K;k++) {
         let ax=0,bx=0,ay=0,by=0;
@@ -161,10 +175,10 @@
 
     function sampleColor(pts, data, W) {
       let r=0,g=0,b=0,n=0;
-      const step = Math.max(1,Math.floor(pts.length/30));
+      const step=Math.max(1,Math.floor(pts.length/40));
       for (let i=0;i<pts.length;i+=step) {
         const [x,y]=pts[i];
-        const ix=Math.round(x),iy=Math.round(y);
+        const ix=Math.round(x), iy=Math.round(y);
         if (ix<0||ix>=W||iy<0) continue;
         const idx=(iy*W+ix)*4;
         if (idx+2>=data.length) continue;
@@ -177,22 +191,28 @@
     function processImage(idata, W, H) {
       const edges = sobel(idata.data, W, H);
       const sorted = Float32Array.from(edges).sort();
-      const thr = sorted[Math.floor(sorted.length*0.84)];
+      // Use 82nd percentile threshold — keeps meaningful edges, drops noise
+      const thr = sorted[Math.floor(sorted.length*0.82)];
       const bin = new Uint8Array(W*H);
-      for (let i=0;i<edges.length;i++) bin[i]=edges[i]>thr?1:0;
+      for (let i=0;i<edges.length;i++) bin[i] = edges[i]>thr ? 1 : 0;
+
       let comps = bfsComponents(bin, W, H);
-      comps.sort((a,b)=>b.length-a.length);
-      comps = comps.slice(0,260);
+      comps.sort((a,b) => b.length-a.length);
+      comps = comps.slice(0, 280);
+
       return comps.map(comp => {
         const pts = nnOrder(comp);
         const color = sampleColor(comp, idata.data, W);
+        // Try line first
         const lf = fitLine(pts);
         if (lf.r2 > 0.97) return { ...lf, color, pts };
-        if (pts.length >= 12) {
+        // Try circle (strict)
+        if (pts.length >= 16) {
           const cf = fitCircle(pts);
-          if (cf && cf.error < 4.5) return { ...cf, color, pts };
+          if (cf) return { ...cf, color, pts };
         }
-        return { ...fitFourier(pts,6), color, pts };
+        // Fall back to Fourier
+        return { ...fitFourier(pts, 16), color, pts };
       });
     }
 
@@ -201,28 +221,35 @@
       canvas.width = W; canvas.height = H;
       ctx.fillStyle = '#04070e';
       ctx.fillRect(0,0,W,H);
-      ctx.lineWidth = 1.4;
+
       for (const eq of eqs) {
         ctx.strokeStyle = eq.color;
         ctx.shadowColor = eq.color;
-        ctx.shadowBlur = 3;
+        ctx.shadowBlur = 4;
+        ctx.lineWidth = 1.5;
         ctx.beginPath();
-        if (eq.type==='line') {
+
+        if (eq.type === 'line') {
           if (eq.vert) { ctx.moveTo(eq.xc,eq.y0); ctx.lineTo(eq.xc,eq.y1); }
-          else { ctx.moveTo(eq.x0,eq.m*eq.x0+eq.b); ctx.lineTo(eq.x1,eq.m*eq.x1+eq.b); }
-        } else if (eq.type==='circle') {
-          ctx.arc(eq.cx,eq.cy,eq.r,0,2*Math.PI);
+          else { ctx.moveTo(eq.x0, eq.m*eq.x0+eq.b); ctx.lineTo(eq.x1, eq.m*eq.x1+eq.b); }
+
+        } else if (eq.type === 'circle') {
+          ctx.arc(eq.cx, eq.cy, eq.r, 0, 2*Math.PI);
+
         } else {
-          let first=true;
-          for (let i=0;i<=300;i++) {
-            const t=2*Math.PI*i/300;
-            const [x,y]=evalFourier(eq,t);
-            if (first){ctx.moveTo(x,y);first=false;}else ctx.lineTo(x,y);
+          // Evaluate Fourier at 400 points for smooth rendering
+          let first = true;
+          for (let i = 0; i <= 400; i++) {
+            const t = 2*Math.PI*i/400;
+            const [x,y] = evalFourier(eq, t);
+            // Clamp to canvas bounds — prevents wild extrapolation from going off-screen
+            if (x < -W || x > 2*W || y < -H || y > 2*H) { first = true; continue; }
+            if (first) { ctx.moveTo(x,y); first=false; } else ctx.lineTo(x,y);
           }
         }
         ctx.stroke();
       }
-      ctx.shadowBlur=0;
+      ctx.shadowBlur = 0;
     }
 
     function f2(n){return Number(n).toFixed(2);}
@@ -237,14 +264,14 @@
       if (eq.type==='circle')
         return `(x − ${f1(eq.cx)})² + (y − ${f1(eq.cy)})² = ${f1(eq.r)}²`;
       const {a0x,a0y,axC,bxC,ayC,byC} = eq;
-      const xT = axC.slice(0,2).map((a,k)=>`${f2(a)}cos(${k+1}t) + ${f2(bxC[k])}sin(${k+1}t)`).join('\n     + ');
-      const yT = ayC.slice(0,2).map((a,k)=>`${f2(a)}cos(${k+1}t) + ${f2(byC[k])}sin(${k+1}t)`).join('\n     + ');
+      const xT = axC.slice(0,3).map((a,k)=>`${f2(a)}cos(${k+1}t) + ${f2(bxC[k])}sin(${k+1}t)`).join('\n     + ');
+      const yT = ayC.slice(0,3).map((a,k)=>`${f2(a)}cos(${k+1}t) + ${f2(byC[k])}sin(${k+1}t)`).join('\n     + ');
       return `x(t) = ${f1(a0x)}\n   + ${xT} + …\ny(t) = ${f1(a0y)}\n   + ${yT} + …`;
     }
 
-    /* ══════════════════════════════════
+    /* ══════════════════════════════════════════
        UI
-    ══════════════════════════════════ */
+    ══════════════════════════════════════════ */
     const C = {
       bg:'#04070e', surface:'#090e1a', border:'#111e30', borderBright:'#1a3050',
       cyan:'#00dfc8', yellow:'#f5c842', pink:'#e8277a',
@@ -253,8 +280,8 @@
     const EQC = { line:C.yellow, circle:C.pink, fourier:C.cyan };
 
     function Badge({type}) {
-      const labels={line:'LINE',circle:'CIRCLE',fourier:'FOURIER'};
-      return <span style={{fontSize:8,letterSpacing:2,padding:'2px 6px',borderRadius:3,color:EQC[type],border:`1px solid ${EQC[type]}22`,background:`${EQC[type]}11`}}>{labels[type]}</span>;
+      const L={line:'LINE',circle:'CIRCLE',fourier:'FOURIER'};
+      return <span style={{fontSize:8,letterSpacing:2,padding:'2px 6px',borderRadius:3,color:EQC[type],border:`1px solid ${EQC[type]}22`,background:`${EQC[type]}11`}}>{L[type]}</span>;
     }
 
     function StatPill({label,value,color}) {
@@ -267,57 +294,56 @@
     }
 
     function App() {
-      const [status, setStatus]             = useState('idle');
-      const [eqs, setEqs]                   = useState([]);
-      const [origUrl, setOrigUrl]           = useState(null);
-      const [dims, setDims]                 = useState({w:0,h:0});
-      const [stats, setStats]               = useState({l:0,c:0,f:0});
-      const [dragging, setDragging]         = useState(false);
-      const [activeFilter, setActiveFilter] = useState('all');
+      const [status,setStatus]             = useState('idle');
+      const [eqs,setEqs]                   = useState([]);
+      const [origUrl,setOrigUrl]           = useState(null);
+      const [dims,setDims]                 = useState({w:0,h:0});
+      const [stats,setStats]               = useState({l:0,c:0,f:0});
+      const [dragging,setDragging]         = useState(false);
+      const [activeFilter,setActiveFilter] = useState('all');
       const canvasRef     = useRef(null);
       const fileRef       = useRef(null);
-      // Queues a draw job; useEffect fires it after React has mounted the canvas element
       const pendingRender = useRef(null);
 
+      // Draw to canvas after React has committed it to the DOM
       useEffect(() => {
-        if (status === 'done' && canvasRef.current && pendingRender.current) {
-          const { equations, w, h } = pendingRender.current;
+        if (status==='done' && canvasRef.current && pendingRender.current) {
+          const {equations,w,h} = pendingRender.current;
           pendingRender.current = null;
           renderEqs(equations, canvasRef.current, w, h);
         }
       });
 
       const handle = useCallback(file => {
-        if (!file || !file.type.startsWith('image/')) return;
+        if (!file||!file.type.startsWith('image/')) return;
         setStatus('processing'); setEqs([]); setActiveFilter('all');
         const url = URL.createObjectURL(file);
         setOrigUrl(url);
         const img = new Image();
         img.onload = () => {
-          const MAX = 520;
-          let w = img.width, h = img.height;
-          if (w > MAX || h > MAX) { const s = MAX/Math.max(w,h); w = Math.round(w*s); h = Math.round(h*s); }
+          const MAX=520;
+          let w=img.width, h=img.height;
+          if (w>MAX||h>MAX){const s=MAX/Math.max(w,h);w=Math.round(w*s);h=Math.round(h*s);}
           setDims({w,h});
-          const off = document.createElement('canvas');
-          off.width = w; off.height = h;
-          const ctx = off.getContext('2d');
-          ctx.drawImage(img, 0, 0, w, h);
-          const id = ctx.getImageData(0, 0, w, h);
-          setTimeout(() => {
-            const equations = processImage(id, w, h);
+          const off=document.createElement('canvas');
+          off.width=w; off.height=h;
+          const ctx=off.getContext('2d');
+          ctx.drawImage(img,0,0,w,h);
+          const id=ctx.getImageData(0,0,w,h);
+          setTimeout(()=>{
+            const equations=processImage(id,w,h);
             setStats({
-              l: equations.filter(e=>e.type==='line').length,
-              c: equations.filter(e=>e.type==='circle').length,
-              f: equations.filter(e=>e.type==='fourier').length,
+              l:equations.filter(e=>e.type==='line').length,
+              c:equations.filter(e=>e.type==='circle').length,
+              f:equations.filter(e=>e.type==='fourier').length,
             });
             setEqs(equations);
-            // Store job — useEffect will draw once the canvas <element> is in the DOM
-            pendingRender.current = { equations, w, h };
+            pendingRender.current = {equations,w,h};
             setStatus('done');
-          }, 60);
+          }, 80);
         };
-        img.src = url;
-      }, []);
+        img.src=url;
+      },[]);
 
       const visibleEqs = activeFilter==='all' ? eqs : eqs.filter(e=>e.type===activeFilter);
 
@@ -327,29 +353,21 @@
           backgroundSize:'32px 32px'}}>
           <div style={{maxWidth:1100,margin:'0 auto',padding:'40px 24px'}}>
 
-            {/* Header */}
             <div style={{textAlign:'center',marginBottom:48}}>
               <div style={{fontSize:10,letterSpacing:6,color:C.cyan,textTransform:'uppercase',marginBottom:10}}>◈ Mathematical Vision ◈</div>
               <h1 style={{margin:0,fontSize:32,fontWeight:700,color:C.white,letterSpacing:-1}}>Image → Equations</h1>
               <p style={{margin:'10px 0 0',fontSize:11,color:C.muted,letterSpacing:1}}>
-                Sobel edge detection · Fourier series · Linear regression · Algebraic circle fitting
+                Sobel edges · Fourier series (K=16) · Linear regression · Strict algebraic circle fitting
               </p>
             </div>
 
-            {/* Upload zone */}
             {status==='idle' && (
               <div
                 onDrop={e=>{e.preventDefault();handle(e.dataTransfer.files[0]);setDragging(false);}}
                 onDragOver={e=>{e.preventDefault();setDragging(true);}}
                 onDragLeave={()=>setDragging(false)}
                 onClick={()=>fileRef.current.click()}
-                style={{
-                  border:`2px dashed ${dragging?C.cyan:C.borderBright}`,
-                  borderRadius:14,padding:'72px 40px',textAlign:'center',cursor:'pointer',
-                  maxWidth:520,margin:'0 auto',transition:'all 0.25s',
-                  background:dragging?`${C.cyan}08`:`${C.surface}88`,
-                  boxShadow:dragging?`0 0 32px ${C.cyan}22`:'none'
-                }}
+                style={{border:`2px dashed ${dragging?C.cyan:C.borderBright}`,borderRadius:14,padding:'72px 40px',textAlign:'center',cursor:'pointer',maxWidth:520,margin:'0 auto',transition:'all 0.25s',background:dragging?`${C.cyan}08`:`${C.surface}88`,boxShadow:dragging?`0 0 32px ${C.cyan}22`:'none'}}
               >
                 <div style={{fontSize:48,marginBottom:16,filter:dragging?`drop-shadow(0 0 12px ${C.cyan})`:'none',transition:'filter 0.25s'}}>∑</div>
                 <div style={{fontSize:14,color:C.white,marginBottom:8,fontWeight:600}}>Drop an image to transform it</div>
@@ -358,22 +376,18 @@
               </div>
             )}
 
-            {/* Processing */}
             {status==='processing' && (
               <div style={{textAlign:'center',padding:80,animation:'fadeIn 0.3s ease'}}>
                 <div style={{display:'inline-block',width:36,height:36,border:`2px solid ${C.border}`,borderTopColor:C.cyan,borderRadius:'50%',animation:'spin 0.8s linear infinite',marginBottom:20}} />
                 <div style={{fontSize:13,color:C.cyan,marginBottom:8}}>Fitting equations to edges…</div>
                 <div style={{fontSize:10,color:C.muted,lineHeight:1.8}}>
-                  Running Sobel filter · BFS contour tracing<br/>
-                  Linear regression · Algebraic circle fit · Fourier DFT
+                  Sobel filter · BFS contour tracing<br/>Linear regression · Circle arc validation · Fourier DFT (K=16)
                 </div>
               </div>
             )}
 
-            {/* Results */}
             {status==='done' && (
               <div style={{animation:'fadeIn 0.4s ease'}}>
-
                 <div style={{display:'flex',justifyContent:'center',gap:12,marginBottom:28,flexWrap:'wrap'}}>
                   <StatPill label="Total Equations" value={eqs.length} color={C.white}/>
                   <StatPill label="Linear"          value={stats.l}   color={C.yellow}/>
@@ -382,8 +396,6 @@
                 </div>
 
                 <div style={{display:'flex',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
-
-                  {/* Images column */}
                   <div style={{flex:'1 1 360px',display:'flex',gap:12,flexDirection:'column'}}>
                     <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
                       <div style={{flex:'1 1 160px'}}>
@@ -396,7 +408,6 @@
                         <div style={{fontSize:9,color:C.cyan,textTransform:'uppercase',letterSpacing:3,marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
                           <span style={{width:6,height:6,borderRadius:'50%',background:C.cyan,boxShadow:`0 0 6px ${C.cyan}`,display:'inline-block'}}/>Equation render
                         </div>
-                        {/* The canvas mounts here after setStatus('done'); useEffect draws into it immediately after */}
                         <canvas ref={canvasRef} style={{width:'100%',display:'block',borderRadius:6,border:`1px solid ${C.borderBright}`}}/>
                       </div>
                     </div>
@@ -408,22 +419,10 @@
                     >↩ &nbsp; Upload another image</button>
                   </div>
 
-                  {/* Equations list */}
                   <div style={{flex:'0 0 310px',display:'flex',flexDirection:'column',maxHeight:Math.max(dims.h*1.1+60,360)}}>
                     <div style={{display:'flex',gap:4,marginBottom:8}}>
-                      {[
-                        {key:'all',    label:`All (${eqs.length})`},
-                        {key:'line',   label:`Lines (${stats.l})`},
-                        {key:'circle', label:`Circles (${stats.c})`},
-                        {key:'fourier',label:`Fourier (${stats.f})`},
-                      ].map(tab=>(
-                        <button key={tab.key} onClick={()=>setActiveFilter(tab.key)} style={{
-                          flex:1,padding:'5px 2px',borderRadius:4,cursor:'pointer',fontSize:8,letterSpacing:0.5,fontFamily:'inherit',
-                          border:`1px solid ${activeFilter===tab.key?(EQC[tab.key]||C.cyan):C.border}`,
-                          background:activeFilter===tab.key?`${(EQC[tab.key]||C.cyan)}18`:'transparent',
-                          color:activeFilter===tab.key?(EQC[tab.key]||C.cyan):C.muted,
-                          transition:'all 0.15s'
-                        }}>{tab.label}</button>
+                      {[{key:'all',label:`All (${eqs.length})`},{key:'line',label:`Lines (${stats.l})`},{key:'circle',label:`Circles (${stats.c})`},{key:'fourier',label:`Fourier (${stats.f})`}].map(tab=>(
+                        <button key={tab.key} onClick={()=>setActiveFilter(tab.key)} style={{flex:1,padding:'5px 2px',borderRadius:4,cursor:'pointer',fontSize:8,letterSpacing:0.5,fontFamily:'inherit',border:`1px solid ${activeFilter===tab.key?(EQC[tab.key]||C.cyan):C.border}`,background:activeFilter===tab.key?`${(EQC[tab.key]||C.cyan)}18`:'transparent',color:activeFilter===tab.key?(EQC[tab.key]||C.cyan):C.muted,transition:'all 0.15s'}}>{tab.label}</button>
                       ))}
                     </div>
                     <div style={{flex:1,overflowY:'auto',background:C.surface,borderRadius:8,border:`1px solid ${C.border}`,padding:12}}>
@@ -439,9 +438,7 @@
                           </div>
                         </div>
                       ))}
-                      {visibleEqs.length===0 && (
-                        <div style={{textAlign:'center',color:C.muted,fontSize:11,padding:20}}>No equations of this type</div>
-                      )}
+                      {visibleEqs.length===0&&<div style={{textAlign:'center',color:C.muted,fontSize:11,padding:20}}>No equations of this type</div>}
                     </div>
                   </div>
                 </div>
