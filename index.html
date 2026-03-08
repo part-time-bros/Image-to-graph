@@ -23,7 +23,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useRef, useCallback } = React;
+    const { useState, useRef, useCallback, useEffect } = React;
 
     /* ══════════════════════════════════
        MATH ENGINE
@@ -122,8 +122,8 @@
       const Det = d3(M);
       if (Math.abs(Det)<1e-10) return null;
       const sub = i => { const c = M.map(r=>[...r]); c[0][i]=rhs[0]; c[1][i]=rhs[1]; c[2][i]=rhs[2]; return c; };
-      const A=d3(sub(0))/Det, B=d3(sub(1))/Det, C=d3(sub(2))/Det;
-      const cx=-A/2, cy=-B/2, r2c=cx*cx+cy*cy-C;
+      const A=d3(sub(0))/Det, B=d3(sub(1))/Det, C2=d3(sub(2))/Det;
+      const cx=-A/2, cy=-B/2, r2c=cx*cx+cy*cy-C2;
       if (r2c<=0) return null;
       const r=Math.sqrt(r2c);
       if (!isFinite(r)||r<3||r>700) return null;
@@ -228,7 +228,7 @@
     function f2(n){return Number(n).toFixed(2);}
     function f1(n){return Number(n).toFixed(1);}
 
-    function fmtEq(eq,i) {
+    function fmtEq(eq) {
       if (eq.type==='line') {
         if (eq.vert) return `x = ${f1(eq.xc)}`;
         const sign = eq.b>=0?'+ ':'− ';
@@ -243,7 +243,7 @@
     }
 
     /* ══════════════════════════════════
-       UI COLORS
+       UI
     ══════════════════════════════════ */
     const C = {
       bg:'#04070e', surface:'#090e1a', border:'#111e30', borderBright:'#1a3050',
@@ -267,64 +267,89 @@
     }
 
     function App() {
-      const [status,setStatus] = useState('idle');
-      const [eqs,setEqs] = useState([]);
-      const [origUrl,setOrigUrl] = useState(null);
-      const [dims,setDims] = useState({w:0,h:0});
-      const [stats,setStats] = useState({l:0,c:0,f:0});
-      const [dragging,setDragging] = useState(false);
-      const [activeFilter,setActiveFilter] = useState('all');
-      const canvasRef = useRef(null);
-      const fileRef = useRef(null);
+      const [status, setStatus]             = useState('idle');
+      const [eqs, setEqs]                   = useState([]);
+      const [origUrl, setOrigUrl]           = useState(null);
+      const [dims, setDims]                 = useState({w:0,h:0});
+      const [stats, setStats]               = useState({l:0,c:0,f:0});
+      const [dragging, setDragging]         = useState(false);
+      const [activeFilter, setActiveFilter] = useState('all');
+      const canvasRef     = useRef(null);
+      const fileRef       = useRef(null);
+      // Queues a draw job; useEffect fires it after React has mounted the canvas element
+      const pendingRender = useRef(null);
+
+      useEffect(() => {
+        if (status === 'done' && canvasRef.current && pendingRender.current) {
+          const { equations, w, h } = pendingRender.current;
+          pendingRender.current = null;
+          renderEqs(equations, canvasRef.current, w, h);
+        }
+      });
 
       const handle = useCallback(file => {
-        if (!file||!file.type.startsWith('image/')) return;
+        if (!file || !file.type.startsWith('image/')) return;
         setStatus('processing'); setEqs([]); setActiveFilter('all');
         const url = URL.createObjectURL(file);
         setOrigUrl(url);
         const img = new Image();
         img.onload = () => {
-          const MAX=520;
-          let w=img.width, h=img.height;
-          if (w>MAX||h>MAX){const s=MAX/Math.max(w,h);w=Math.round(w*s);h=Math.round(h*s);}
+          const MAX = 520;
+          let w = img.width, h = img.height;
+          if (w > MAX || h > MAX) { const s = MAX/Math.max(w,h); w = Math.round(w*s); h = Math.round(h*s); }
           setDims({w,h});
-          const off=document.createElement('canvas');
-          off.width=w; off.height=h;
-          const ctx=off.getContext('2d');
-          ctx.drawImage(img,0,0,w,h);
-          const id=ctx.getImageData(0,0,w,h);
-          setTimeout(()=>{
-            const equations=processImage(id,w,h);
-            setStats({l:equations.filter(e=>e.type==='line').length,c:equations.filter(e=>e.type==='circle').length,f:equations.filter(e=>e.type==='fourier').length});
+          const off = document.createElement('canvas');
+          off.width = w; off.height = h;
+          const ctx = off.getContext('2d');
+          ctx.drawImage(img, 0, 0, w, h);
+          const id = ctx.getImageData(0, 0, w, h);
+          setTimeout(() => {
+            const equations = processImage(id, w, h);
+            setStats({
+              l: equations.filter(e=>e.type==='line').length,
+              c: equations.filter(e=>e.type==='circle').length,
+              f: equations.filter(e=>e.type==='fourier').length,
+            });
             setEqs(equations);
-            if(canvasRef.current) renderEqs(equations,canvasRef.current,w,h);
+            // Store job — useEffect will draw once the canvas <element> is in the DOM
+            pendingRender.current = { equations, w, h };
             setStatus('done');
-          },60);
+          }, 60);
         };
-        img.src=url;
-      },[]);
+        img.src = url;
+      }, []);
 
       const visibleEqs = activeFilter==='all' ? eqs : eqs.filter(e=>e.type===activeFilter);
 
       return (
-        <div style={{minHeight:'100vh',background:C.bg,fontFamily:"'JetBrains Mono',monospace",color:C.text,backgroundImage:`linear-gradient(${C.border}44 1px,transparent 1px),linear-gradient(90deg,${C.border}44 1px,transparent 1px)`,backgroundSize:'32px 32px'}}>
+        <div style={{minHeight:'100vh',background:C.bg,fontFamily:"'JetBrains Mono',monospace",color:C.text,
+          backgroundImage:`linear-gradient(${C.border}44 1px,transparent 1px),linear-gradient(90deg,${C.border}44 1px,transparent 1px)`,
+          backgroundSize:'32px 32px'}}>
           <div style={{maxWidth:1100,margin:'0 auto',padding:'40px 24px'}}>
 
             {/* Header */}
             <div style={{textAlign:'center',marginBottom:48}}>
               <div style={{fontSize:10,letterSpacing:6,color:C.cyan,textTransform:'uppercase',marginBottom:10}}>◈ Mathematical Vision ◈</div>
               <h1 style={{margin:0,fontSize:32,fontWeight:700,color:C.white,letterSpacing:-1}}>Image → Equations</h1>
-              <p style={{margin:'10px 0 0',fontSize:11,color:C.muted,letterSpacing:1}}>Sobel edge detection · Fourier series · Linear regression · Algebraic circle fitting</p>
+              <p style={{margin:'10px 0 0',fontSize:11,color:C.muted,letterSpacing:1}}>
+                Sobel edge detection · Fourier series · Linear regression · Algebraic circle fitting
+              </p>
             </div>
 
-            {/* Upload */}
+            {/* Upload zone */}
             {status==='idle' && (
               <div
                 onDrop={e=>{e.preventDefault();handle(e.dataTransfer.files[0]);setDragging(false);}}
                 onDragOver={e=>{e.preventDefault();setDragging(true);}}
                 onDragLeave={()=>setDragging(false)}
                 onClick={()=>fileRef.current.click()}
-                style={{border:`2px dashed ${dragging?C.cyan:C.borderBright}`,borderRadius:14,padding:'72px 40px',textAlign:'center',cursor:'pointer',maxWidth:520,margin:'0 auto',transition:'all 0.25s',background:dragging?`${C.cyan}08`:`${C.surface}88`,boxShadow:dragging?`0 0 32px ${C.cyan}22`:'none'}}
+                style={{
+                  border:`2px dashed ${dragging?C.cyan:C.borderBright}`,
+                  borderRadius:14,padding:'72px 40px',textAlign:'center',cursor:'pointer',
+                  maxWidth:520,margin:'0 auto',transition:'all 0.25s',
+                  background:dragging?`${C.cyan}08`:`${C.surface}88`,
+                  boxShadow:dragging?`0 0 32px ${C.cyan}22`:'none'
+                }}
               >
                 <div style={{fontSize:48,marginBottom:16,filter:dragging?`drop-shadow(0 0 12px ${C.cyan})`:'none',transition:'filter 0.25s'}}>∑</div>
                 <div style={{fontSize:14,color:C.white,marginBottom:8,fontWeight:600}}>Drop an image to transform it</div>
@@ -338,24 +363,27 @@
               <div style={{textAlign:'center',padding:80,animation:'fadeIn 0.3s ease'}}>
                 <div style={{display:'inline-block',width:36,height:36,border:`2px solid ${C.border}`,borderTopColor:C.cyan,borderRadius:'50%',animation:'spin 0.8s linear infinite',marginBottom:20}} />
                 <div style={{fontSize:13,color:C.cyan,marginBottom:8}}>Fitting equations to edges…</div>
-                <div style={{fontSize:10,color:C.muted,lineHeight:1.8}}>Running Sobel filter · BFS contour tracing<br/>Linear regression · Algebraic circle fit · Fourier DFT</div>
+                <div style={{fontSize:10,color:C.muted,lineHeight:1.8}}>
+                  Running Sobel filter · BFS contour tracing<br/>
+                  Linear regression · Algebraic circle fit · Fourier DFT
+                </div>
               </div>
             )}
 
             {/* Results */}
             {status==='done' && (
               <div style={{animation:'fadeIn 0.4s ease'}}>
-                {/* Stats */}
+
                 <div style={{display:'flex',justifyContent:'center',gap:12,marginBottom:28,flexWrap:'wrap'}}>
                   <StatPill label="Total Equations" value={eqs.length} color={C.white}/>
-                  <StatPill label="Linear" value={stats.l} color={C.yellow}/>
-                  <StatPill label="Circles" value={stats.c} color={C.pink}/>
-                  <StatPill label="Fourier Series" value={stats.f} color={C.cyan}/>
+                  <StatPill label="Linear"          value={stats.l}   color={C.yellow}/>
+                  <StatPill label="Circles"         value={stats.c}   color={C.pink}/>
+                  <StatPill label="Fourier Series"  value={stats.f}   color={C.cyan}/>
                 </div>
 
-                {/* Main layout */}
                 <div style={{display:'flex',gap:16,alignItems:'flex-start',flexWrap:'wrap'}}>
-                  {/* Canvases */}
+
+                  {/* Images column */}
                   <div style={{flex:'1 1 360px',display:'flex',gap:12,flexDirection:'column'}}>
                     <div style={{display:'flex',gap:12,flexWrap:'wrap'}}>
                       <div style={{flex:'1 1 160px'}}>
@@ -368,6 +396,7 @@
                         <div style={{fontSize:9,color:C.cyan,textTransform:'uppercase',letterSpacing:3,marginBottom:8,display:'flex',alignItems:'center',gap:8}}>
                           <span style={{width:6,height:6,borderRadius:'50%',background:C.cyan,boxShadow:`0 0 6px ${C.cyan}`,display:'inline-block'}}/>Equation render
                         </div>
+                        {/* The canvas mounts here after setStatus('done'); useEffect draws into it immediately after */}
                         <canvas ref={canvasRef} style={{width:'100%',display:'block',borderRadius:6,border:`1px solid ${C.borderBright}`}}/>
                       </div>
                     </div>
@@ -381,13 +410,22 @@
 
                   {/* Equations list */}
                   <div style={{flex:'0 0 310px',display:'flex',flexDirection:'column',maxHeight:Math.max(dims.h*1.1+60,360)}}>
-                    {/* Filter tabs */}
                     <div style={{display:'flex',gap:4,marginBottom:8}}>
-                      {[{key:'all',label:`All (${eqs.length})`},{key:'line',label:`Lines (${stats.l})`},{key:'circle',label:`Circles (${stats.c})`},{key:'fourier',label:`Fourier (${stats.f})`}].map(tab=>(
-                        <button key={tab.key} onClick={()=>setActiveFilter(tab.key)} style={{flex:1,padding:'5px 2px',borderRadius:4,cursor:'pointer',fontSize:8,letterSpacing:0.5,fontFamily:'inherit',border:`1px solid ${activeFilter===tab.key?(EQC[tab.key]||C.cyan):C.border}`,background:activeFilter===tab.key?`${(EQC[tab.key]||C.cyan)}18`:'transparent',color:activeFilter===tab.key?(EQC[tab.key]||C.cyan):C.muted,transition:'all 0.15s'}}>{tab.label}</button>
+                      {[
+                        {key:'all',    label:`All (${eqs.length})`},
+                        {key:'line',   label:`Lines (${stats.l})`},
+                        {key:'circle', label:`Circles (${stats.c})`},
+                        {key:'fourier',label:`Fourier (${stats.f})`},
+                      ].map(tab=>(
+                        <button key={tab.key} onClick={()=>setActiveFilter(tab.key)} style={{
+                          flex:1,padding:'5px 2px',borderRadius:4,cursor:'pointer',fontSize:8,letterSpacing:0.5,fontFamily:'inherit',
+                          border:`1px solid ${activeFilter===tab.key?(EQC[tab.key]||C.cyan):C.border}`,
+                          background:activeFilter===tab.key?`${(EQC[tab.key]||C.cyan)}18`:'transparent',
+                          color:activeFilter===tab.key?(EQC[tab.key]||C.cyan):C.muted,
+                          transition:'all 0.15s'
+                        }}>{tab.label}</button>
                       ))}
                     </div>
-                    {/* Scrollable list */}
                     <div style={{flex:1,overflowY:'auto',background:C.surface,borderRadius:8,border:`1px solid ${C.border}`,padding:12}}>
                       {visibleEqs.map((eq,i)=>(
                         <div key={i} style={{marginBottom:10,paddingBottom:10,borderBottom:`1px solid ${C.border}`}}>
@@ -397,11 +435,13 @@
                             <span style={{fontSize:8,color:C.muted,marginLeft:'auto'}}>#{eqs.indexOf(eq)+1}</span>
                           </div>
                           <div style={{fontSize:9.5,color:'#a0c4e0',lineHeight:1.7,whiteSpace:'pre-wrap',paddingLeft:14,borderLeft:`2px solid ${EQC[eq.type]}33`}}>
-                            {fmtEq(eq,eqs.indexOf(eq))}
+                            {fmtEq(eq)}
                           </div>
                         </div>
                       ))}
-                      {visibleEqs.length===0 && <div style={{textAlign:'center',color:C.muted,fontSize:11,padding:20}}>No equations of this type</div>}
+                      {visibleEqs.length===0 && (
+                        <div style={{textAlign:'center',color:C.muted,fontSize:11,padding:20}}>No equations of this type</div>
+                      )}
                     </div>
                   </div>
                 </div>
